@@ -250,7 +250,7 @@ impl Machine {
                         let bit = (byte >> (7 - j) & 1) != 0;
                         let tgt = ((self.v[x] as usize + j) % DISPLAY_WIDTH)
                             + ((self.v[y] as usize + i) % DISPLAY_HEIGHT) * DISPLAY_WIDTH;
-                        if self.display[tgt] {
+                        if self.display[tgt] && bit {
                             self.v[0xF] = 1;
                         }
                         self.display[tgt] ^= bit;
