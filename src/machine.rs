@@ -1,11 +1,13 @@
 use crate::error::*;
 use crate::ins::Ins;
 use rand::{rngs::ThreadRng, thread_rng, Rng};
-use sdl2::keyboard::Scancode;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::{Canvas, RenderTarget};
-use sdl2::EventPump;
+use sdl2::{
+    keyboard::Scancode,
+    pixels::Color,
+    rect::Rect,
+    render::{Canvas, RenderTarget},
+    EventPump,
+};
 use std::collections::HashSet;
 use std::time::Instant;
 
@@ -38,7 +40,7 @@ const DISPLAY_SIZE: usize = DISPLAY_WIDTH * DISPLAY_HEIGHT;
 
 pub const PIXEL_SIZE: usize = 15;
 
-pub struct Machine<R: RenderTarget> {
+pub struct Machine {
     pc: u16,
     i: u16,
     v: [u8; 16],
@@ -47,15 +49,14 @@ pub struct Machine<R: RenderTarget> {
     display: [bool; DISPLAY_SIZE],
     dt: u8,
     st: u8,
-    canvas: Canvas<R>,
     timer: Option<Instant>,
     rng: ThreadRng,
     keyboard_state: HashSet<Scancode>,
     old_keyboard_state: HashSet<Scancode>,
 }
 
-impl<R: RenderTarget> Machine<R> {
-    pub fn new(canvas: Canvas<R>) -> Self {
+impl Machine {
+    pub fn new() -> Self {
         let mut memory = [0; 4096];
         memory[0..80].copy_from_slice(&FONT);
         Self {
@@ -69,7 +70,6 @@ impl<R: RenderTarget> Machine<R> {
             st: 0,
             timer: None,
             rng: thread_rng(),
-            canvas,
             keyboard_state: HashSet::new(),
             old_keyboard_state: HashSet::new(),
         }
@@ -78,17 +78,17 @@ impl<R: RenderTarget> Machine<R> {
         self.memory[PROGRAM_START..PROGRAM_START + program.len()].copy_from_slice(program);
     }
 
-    fn draw(&mut self) -> Result<()> {
-        self.canvas.clear();
+    fn draw(&self, canvas: &mut Canvas<impl RenderTarget>) -> Result<()> {
+        canvas.clear();
 
         for (y, line) in self.display.chunks_exact(DISPLAY_WIDTH).enumerate() {
             for (x, pixel) in line.iter().enumerate() {
                 if *pixel {
-                    self.canvas.set_draw_color(Color::WHITE);
+                    canvas.set_draw_color(Color::WHITE);
                 } else {
-                    self.canvas.set_draw_color(Color::BLACK);
+                    canvas.set_draw_color(Color::BLACK);
                 }
-                self.canvas
+                canvas
                     .fill_rect(Rect::new(
                         x as i32 * PIXEL_SIZE as i32,
                         y as i32 * PIXEL_SIZE as i32,
@@ -99,11 +99,15 @@ impl<R: RenderTarget> Machine<R> {
             }
         }
 
-        self.canvas.present();
+        canvas.present();
         Ok(())
     }
 
-    pub fn step(&mut self, event_pump: &mut EventPump) -> Result<()> {
+    pub fn step(
+        &mut self,
+        event_pump: &mut EventPump,
+        canvas: &mut Canvas<impl RenderTarget>,
+    ) -> Result<()> {
         // update timer
         if let Some(timer) = self.timer {
             let elapsed = timer.elapsed().as_micros() / 16667;
@@ -136,39 +140,15 @@ impl<R: RenderTarget> Machine<R> {
         // run instruction
         match ins {
             Ins::Sys(_) => {} // no special machine code support
-            Ins::JpV0(addr) => {
-                self.pc = self.v[0] as u16 + addr;
-            }
             Ins::Cls => {
                 self.display = [false; DISPLAY_SIZE];
             }
-            Ins::LdI(addr) => {
-                self.i = addr;
-            }
-            Ins::LdVB(reg, byte) => {
-                self.v[reg] = byte;
-            }
-            Ins::Drw(x, y, n) => {
-                self.v[0xF] = 0;
-                let sprite = &self.memory[self.i as usize..self.i as usize + n as usize];
-
-                for (i, byte) in sprite.iter().enumerate() {
-                    for j in 0..8 {
-                        let bit = (byte >> (7 - j) & 1) != 0;
-                        let tgt = ((self.v[x] as usize + j) % DISPLAY_WIDTH)
-                            + ((self.v[y] as usize + i) % DISPLAY_HEIGHT) * DISPLAY_WIDTH;
-                        if self.display[tgt] {
-                            self.v[0xF] = 1;
-                        }
-                        self.display[tgt] ^= bit;
-                    }
-                }
-                self.draw()?;
-            }
-            Ins::AddVB(reg, byte) => {
-                self.v[reg] = self.v[reg].wrapping_add(byte);
-            }
+            Ins::Ret => self.pc = self.stack.pop().expect("Stack underflow"),
             Ins::Jp(addr) => {
+                self.pc = addr;
+            }
+            Ins::Call(addr) => {
+                self.stack.push(self.pc);
                 self.pc = addr;
             }
             Ins::SeVB(reg, byte) => {
@@ -186,16 +166,12 @@ impl<R: RenderTarget> Machine<R> {
                     self.pc += 2;
                 }
             }
-            Ins::SneVV(x, y) => {
-                if self.v[x] != self.v[y] {
-                    self.pc += 2;
-                }
+            Ins::LdVB(reg, byte) => {
+                self.v[reg] = byte;
             }
-            Ins::Call(addr) => {
-                self.stack.push(self.pc);
-                self.pc = addr;
+            Ins::AddVB(reg, byte) => {
+                self.v[reg] = self.v[reg].wrapping_add(byte);
             }
-            Ins::Ret => self.pc = self.stack.pop().expect("Stack underflow"),
             Ins::LdVV(x, y) => {
                 self.v[x] = self.v[y];
             }
@@ -251,33 +227,36 @@ impl<R: RenderTarget> Machine<R> {
                 }
                 self.v[x] <<= 1;
             }
-            Ins::LdIlocV(x) => {
-                for n in 0..=x {
-                    self.memory[self.i as usize + n] = self.v[n];
+            Ins::SneVV(x, y) => {
+                if self.v[x] != self.v[y] {
+                    self.pc += 2;
                 }
             }
-            Ins::LdVIloc(x) => {
-                for n in 0..=x {
-                    self.v[n] = self.memory[self.i as usize + n];
-                }
+            Ins::LdI(addr) => {
+                self.i = addr;
             }
-            Ins::LdBV(x) => {
-                self.memory[self.i as usize] = self.v[x] / 100;
-                self.memory[self.i as usize + 1] = self.v[x] % 100 / 10;
-                self.memory[self.i as usize + 2] = self.v[x] % 10;
-            }
-            Ins::LdFV(x) => {
-                let digit = self.v[x] % 10;
-                self.i = (digit as usize * FONT_SPRITE_SIZE) as u16;
-            }
-            Ins::LdDtV(x) => {
-                self.dt = self.v[x];
-            }
-            Ins::LdVDt(x) => {
-                self.v[x] = self.dt;
+            Ins::JpV0(addr) => {
+                self.pc = self.v[0] as u16 + addr;
             }
             Ins::Rnd(x, mask) => {
                 self.v[x] = self.rng.gen::<u8>() & mask;
+            }
+            Ins::Drw(x, y, n) => {
+                self.v[0xF] = 0;
+                let sprite = &self.memory[self.i as usize..self.i as usize + n as usize];
+
+                for (i, byte) in sprite.iter().enumerate() {
+                    for j in 0..8 {
+                        let bit = (byte >> (7 - j) & 1) != 0;
+                        let tgt = ((self.v[x] as usize + j) % DISPLAY_WIDTH)
+                            + ((self.v[y] as usize + i) % DISPLAY_HEIGHT) * DISPLAY_WIDTH;
+                        if self.display[tgt] {
+                            self.v[0xF] = 1;
+                        }
+                        self.display[tgt] ^= bit;
+                    }
+                }
+                self.draw(canvas)?;
             }
             Ins::Skp(x) => {
                 if let Some(key) = keypad_to_scancode(self.v[x]) {
@@ -295,11 +274,8 @@ impl<R: RenderTarget> Machine<R> {
                     self.pc += 2;
                 }
             }
-            Ins::LdStV(x) => {
-                self.st = self.v[x];
-            }
-            Ins::AddI(x) => {
-                self.i += self.v[x] as u16;
+            Ins::LdVDt(x) => {
+                self.v[x] = self.dt;
             }
             Ins::LdVK(x) => {
                 if let Some(scancode) = self
@@ -314,6 +290,34 @@ impl<R: RenderTarget> Machine<R> {
                     }
                 } else {
                     self.pc -= 2;
+                }
+            }
+            Ins::LdDtV(x) => {
+                self.dt = self.v[x];
+            }
+            Ins::LdStV(x) => {
+                self.st = self.v[x];
+            }
+            Ins::AddI(x) => {
+                self.i += self.v[x] as u16;
+            }
+            Ins::LdFV(x) => {
+                let digit = self.v[x] % 10;
+                self.i = (digit as usize * FONT_SPRITE_SIZE) as u16;
+            }
+            Ins::LdBV(x) => {
+                self.memory[self.i as usize] = self.v[x] / 100;
+                self.memory[self.i as usize + 1] = self.v[x] % 100 / 10;
+                self.memory[self.i as usize + 2] = self.v[x] % 10;
+            }
+            Ins::LdIlocV(x) => {
+                for n in 0..=x {
+                    self.memory[self.i as usize + n] = self.v[n];
+                }
+            }
+            Ins::LdVIloc(x) => {
+                for n in 0..=x {
+                    self.v[n] = self.memory[self.i as usize + n];
                 }
             }
         }

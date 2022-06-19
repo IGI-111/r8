@@ -1,7 +1,6 @@
 use crate::error::*;
 use crate::machine::*;
-use sdl2::event::Event;
-use sdl2::pixels::Color;
+use sdl2::{event::Event, pixels::Color};
 use std::io::{stdout, Write};
 use std::process::ExitCode;
 
@@ -37,19 +36,19 @@ fn try_main() -> Result<()> {
         .opengl()
         .build()?;
 
+    let mut m = Machine::new();
+
+    let program = std::fs::read(&args[1]).unwrap();
+    m.load(&program);
+
     let mut canvas = window.into_canvas().build()?;
     canvas.set_draw_color(Color::BLACK);
     canvas.clear();
     canvas.present();
 
-    let mut m = Machine::new(canvas);
-
-    let program = std::fs::read(&args[1]).unwrap();
-    m.load(&program);
-
     let mut event_pump = sdl_context.event_pump().map_err(Error::EventPump)?;
     loop {
-        m.step(&mut event_pump)?;
+        m.step(&mut event_pump, &mut canvas)?;
         std::thread::sleep(std::time::Duration::from_micros(500)); // slow down a bit
         if let Some(Event::Quit { .. }) = event_pump.poll_event() {
             return Ok(());
