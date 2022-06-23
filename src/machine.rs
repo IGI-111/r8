@@ -142,6 +142,8 @@ impl Machine {
             Ins::Sys(_) => {} // no special machine code support
             Ins::Cls => {
                 self.display = [false; DISPLAY_SIZE];
+                canvas.clear();
+                canvas.present();
             }
             Ins::Ret => self.pc = self.stack.pop().expect("Stack underflow"),
             Ins::Jp(addr) => {
@@ -185,46 +187,26 @@ impl Machine {
                 self.v[x] ^= self.v[y];
             }
             Ins::AddVV(x, y) => {
-                if let Some(res) = self.v[x].checked_add(self.v[y]) {
-                    self.v[0xF] = 0;
-                    self.v[x] = res;
-                } else {
-                    self.v[0xF] = 1;
-                    self.v[x] = self.v[x].wrapping_add(self.v[y]);
-                }
+                let (res, is_overflow) = self.v[x].overflowing_add(self.v[y]);
+                self.v[0xF] = if is_overflow { 1 } else { 0 };
+                self.v[x] = res;
             }
             Ins::Sub(x, y) => {
-                if let Some(res) = self.v[x].checked_sub(self.v[y]) {
-                    self.v[0xF] = 0;
-                    self.v[x] = res;
-                } else {
-                    self.v[0xF] = 1;
-                    self.v[x] = self.v[x].wrapping_sub(self.v[y]);
-                }
+                let res = self.v[x].wrapping_sub(self.v[y]);
+                self.v[0xF] = if self.v[x] > self.v[y] { 1 } else { 0 };
+                self.v[x] = res;
             }
             Ins::Shr(x) => {
-                if self.v[x] & 1 != 0 {
-                    self.v[0xF] = 1;
-                } else {
-                    self.v[0xF] = 0;
-                }
+                self.v[0xF] = self.v[x] & 1;
                 self.v[x] >>= 1;
             }
             Ins::Subn(x, y) => {
-                if let Some(res) = self.v[y].checked_sub(self.v[x]) {
-                    self.v[0xF] = 0;
-                    self.v[x] = res;
-                } else {
-                    self.v[0xF] = 1;
-                    self.v[x] = self.v[y].wrapping_sub(self.v[x]);
-                }
+                let res = self.v[y].wrapping_sub(self.v[x]);
+                self.v[0xF] = if self.v[y] > self.v[x] { 1 } else { 0 };
+                self.v[x] = res;
             }
             Ins::Shl(x) => {
-                if self.v[x] & 0b10000000 != 0 {
-                    self.v[0xF] = 1;
-                } else {
-                    self.v[0xF] = 0;
-                }
+                self.v[0xF] = self.v[x] >> 7;
                 self.v[x] <<= 1;
             }
             Ins::SneVV(x, y) => {
@@ -242,14 +224,15 @@ impl Machine {
                 self.v[x] = self.rng.gen::<u8>() & mask;
             }
             Ins::Drw(x, y, n) => {
-                self.v[0xF] = 0;
                 let sprite = &self.memory[self.i as usize..self.i as usize + n as usize];
-
+                self.v[0xF] = 0;
                 for (i, byte) in sprite.iter().enumerate() {
                     for j in 0..8 {
-                        let bit = (byte >> (7 - j) & 1) != 0;
-                        let tgt = ((self.v[x] as usize + j) % DISPLAY_WIDTH)
-                            + ((self.v[y] as usize + i) % DISPLAY_HEIGHT) * DISPLAY_WIDTH;
+                        let bit = (byte >> (7 - j) & 1) == 1;
+                        let xj = (self.v[x] as usize + j) % DISPLAY_WIDTH;
+                        let yi = (self.v[y] as usize + i) % DISPLAY_HEIGHT;
+                        let tgt = xj + yi * DISPLAY_WIDTH;
+
                         if self.display[tgt] && bit {
                             self.v[0xF] = 1;
                         }
@@ -311,14 +294,13 @@ impl Machine {
                 self.memory[self.i as usize + 2] = self.v[x] % 10;
             }
             Ins::LdIlocV(x) => {
-                for n in 0..=x {
-                    self.memory[self.i as usize + n] = self.v[n];
-                }
+                self.memory[self.i as usize..=((self.i + x as u16) as usize)]
+                    .copy_from_slice(&self.v[0..=(x as usize)]);
             }
             Ins::LdVIloc(x) => {
-                for n in 0..=x {
-                    self.v[n] = self.memory[self.i as usize + n];
-                }
+                self.v[0..=(x as usize)].copy_from_slice(
+                    &self.memory[self.i as usize..=((self.i + x as u16) as usize)],
+                );
             }
         }
         Ok(())
